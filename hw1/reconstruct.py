@@ -649,74 +649,6 @@ def _se3_exp(xi: np.ndarray) -> np.ndarray:
 
 
 # -----------------------------------------------------------------------------
-# TSDF fusion
-# -----------------------------------------------------------------------------
-
-
-def fuse_tsdf(
-    frames: Iterable["FrameRecord"],
-    intr: o3d.camera.PinholeCameraIntrinsic,
-    voxel: float,
-    sdf_trunc_mult: float,
-    output_dir: Path,
-    output_tag: str = "",
-) -> None:
-    """
-    frames: iterable of (rgb_np_uint8, depth_np_float32, T_wk)
-    Create ScalableTSDFVolume(voxel_length=voxel, sdf_trunc=voxel*sdf_trunc_mult).
-    Integrate per frame. Extract mesh and point cloud.
-    Save mesh (.ply/.obj) and a dense pcd.
-    """
-
-    tsdf = o3d.pipelines.integration.ScalableTSDFVolume(
-        voxel_length=float(voxel),
-        sdf_trunc=float(voxel * sdf_trunc_mult),
-        color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8,
-    )
-
-    frame_count = 0
-    for frame in frames:
-        color = o3d.geometry.Image(frame.rgb.astype(np.uint8))
-        depth = o3d.geometry.Image(frame.depth.astype(np.float32))
-        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            color,
-            depth,
-            depth_scale=1.0,
-            depth_trunc=float(np.max(frame.depth) + 1.0) if np.any(frame.depth) else 10.0,
-            convert_rgb_to_intensity=False,
-        )
-        tsdf.integrate(rgbd, intr, np.linalg.inv(frame.pose_world))
-        frame_count += 1
-
-    if frame_count == 0:
-        logging.warning("TSDF fusion skipped: no frames provided.")
-        return
-
-    mesh = tsdf.extract_triangle_mesh()
-    mesh.compute_vertex_normals()
-    suffix = f"_{output_tag}" if output_tag else ""
-    mesh_path = output_dir / f"mesh_optimized{suffix}.obj"
-    o3d.io.write_triangle_mesh(str(mesh_path), mesh)
-    triangle_count = len(mesh.triangles)
-    if triangle_count < 10000:
-        logging.warning(
-            "TSDF mesh has only %d triangles (<10000). Reconstruction may be sparse.",
-            triangle_count,
-        )
-
-    pcd = tsdf.extract_point_cloud()
-    pcd_path = output_dir / f"tsdf_points{suffix}.ply"
-    o3d.io.write_point_cloud(str(pcd_path), pcd)
-    logging.info(
-        "TSDF fusion complete: mesh=%s (%d triangles), points=%s (%d pts).",
-        mesh_path,
-        triangle_count,
-        pcd_path,
-        len(pcd.points),
-    )
-
-
-# -----------------------------------------------------------------------------
 # Frame bookkeeping and utilities
 # -----------------------------------------------------------------------------
 
@@ -1301,15 +1233,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the coarse global registration stage and initialize ICP with identity.",
     )
-    parser.add_argument("--tsdf", type=str2bool, default=True)
-    parser.add_argument(
-        "--disable-tsdf",
-        action="store_true",
-        help="Skip TSDF fusion entirely (overrides --tsdf).",
-    )
-    parser.add_argument("--sdf-trunc-mult", type=float, default=5.0)
     parser.add_argument("--output-dir", type=str, default="./out")
-    parser.add_argument("--save-raw", type=str2bool, default=True)
     parser.add_argument("--max-pairs", type=int, default=20000)
     return parser
 
@@ -1348,35 +1272,11 @@ def main():
 
     stage_suffix = output_suffix
 
-    if args.save_raw:
-        _export_stage_point_clouds(
-            raw_pcd,
-            output_dir,
-            [
-                f"reconstruction_raw{stage_suffix}",
-                f"stage_icp_refinement{stage_suffix}",
-            ],
-            "ICP refinement (pairwise alignment)",
-        )
-
     _export_stage_point_clouds(
         coarse_pcd,
         output_dir,
-        [
-            f"reconstruction_coarse{stage_suffix}",
-            f"stage_global_registration{stage_suffix}",
-        ],
+        [f"reconstruction_coarse{stage_suffix}"],
         "global registration (coarse alignment)",
-    )
-
-    _export_stage_point_clouds(
-        optimized_pcd,
-        output_dir,
-        [
-            f"reconstruction_optimized{stage_suffix}",
-            f"stage_final{stage_suffix}",
-        ],
-        "final reconstruction",
     )
 
     frames: List[FrameRecord] = result["frames"]  # type: ignore[assignment]
@@ -1386,18 +1286,6 @@ def main():
         if frames
         else np.zeros((0, 3), dtype=float)
     )
-
-    if args.tsdf and not args.disable_tsdf:
-        fuse_tsdf(
-            frames,
-            load_intrinsics(Path(args.intrinsics))[0],
-            args.voxel_size,
-            args.sdf_trunc_mult,
-            output_dir,
-            args.icp_mode,
-        )
-    elif args.disable_tsdf:
-        logging.info("Skipping TSDF fusion because --disable-tsdf was provided.")
 
     pair_metrics: List[Dict[str, float]] = result["pair_metrics"]  # type: ignore[assignment]
     if pair_metrics:
