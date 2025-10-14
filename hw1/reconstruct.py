@@ -649,136 +649,6 @@ def _se3_exp(xi: np.ndarray) -> np.ndarray:
 
 
 # -----------------------------------------------------------------------------
-# Keyframe storage
-# -----------------------------------------------------------------------------
-
-
-@dataclass
-class Keyframe:
-    index: int
-    frame_id: int
-    pose: np.ndarray
-    down_pcd: o3d.geometry.PointCloud
-    fpfh: Optional[o3d.pipelines.registration.Feature]
-
-
-class KeyframeDB:
-    def __init__(self) -> None:
-        self.keyframes: List[Keyframe] = []
-
-    def add_keyframe(
-        self,
-        frame_id: int,
-        pose: np.ndarray,
-        down_pcd: o3d.geometry.PointCloud,
-        fpfh,
-    ) -> int:
-        idx = len(self.keyframes)
-        self.keyframes.append(
-            Keyframe(
-                index=idx,
-                frame_id=frame_id,
-                pose=np.array(pose, dtype=np.float64),
-                down_pcd=down_pcd,
-                fpfh=fpfh,
-            )
-        )
-        return idx
-
-    def get_keyframe(self, index: int) -> Keyframe:
-        return self.keyframes[index]
-
-    def __len__(self) -> int:
-        return len(self.keyframes)
-
-    def loop_candidates(self, frame_id: int, loop_every: int) -> List[Keyframe]:
-        if loop_every <= 0:
-            return []
-        candidates = [
-            kf for kf in self.keyframes if frame_id - kf.frame_id >= loop_every
-        ]
-        candidates.sort(key=lambda k: frame_id - k.frame_id, reverse=True)
-        return candidates[:5]
-
-
-# -----------------------------------------------------------------------------
-# Pose graph optimization
-# -----------------------------------------------------------------------------
-
-
-def build_and_optimize_pose_graph(
-    keyframes: List[Keyframe],
-    odom_edges: List[Dict[str, object]],
-    loop_edges: List[Dict[str, object]],
-) -> List[np.ndarray]:
-    """
-    Construct PoseGraph, run global optimization, return optimized T_wk poses.
-    """
-
-    if len(keyframes) == 0:
-        return []
-
-    pose_graph = o3d.pipelines.registration.PoseGraph()
-    initial_poses = [np.array(kf.pose, dtype=np.float64) for kf in keyframes]
-    for pose in initial_poses:
-        pose_graph.nodes.append(o3d.pipelines.registration.PoseGraphNode(pose))
-
-    for edge in odom_edges + loop_edges:
-        pose_graph.edges.append(
-            o3d.pipelines.registration.PoseGraphEdge(
-                int(edge["source"]),
-                int(edge["target"]),
-                np.array(edge["transformation"], dtype=np.float64),
-                edge["information"],
-                bool(edge.get("uncertain", False)),
-            )
-        )
-
-    method = o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt()
-    criteria = o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria()
-    option = o3d.pipelines.registration.GlobalOptimizationOption(
-        max_correspondence_distance=0.05,
-        edge_prune_threshold=0.25,
-        preference_loop_closure=0.1,
-        reference_node=0,
-    )
-    try:
-        option.robust_kernel = o3d.pipelines.registration.RobustKernel(
-            o3d.pipelines.registration.RobustKernelType.TukeyLoss, 0.05
-        )
-    except AttributeError:
-        logging.warning(
-            "Current Open3D build does not expose Tukey robust kernel; continuing without it."
-        )
-
-    o3d.pipelines.registration.global_optimization(pose_graph, method, criteria, option)
-    optimized_poses = [np.array(node.pose, dtype=np.float64) for node in pose_graph.nodes]
-
-    max_trans_delta = 0.0
-    max_rot_delta = 0.0
-    for before, after in zip(initial_poses, optimized_poses):
-        delta_t = np.linalg.norm(before[:3, 3] - after[:3, 3])
-        R_delta = after[:3, :3] @ before[:3, :3].T
-        angle = math.acos(
-            max(-1.0, min(1.0, (np.trace(R_delta) - 1.0) * 0.5))
-        )
-        max_trans_delta = max(max_trans_delta, delta_t)
-        max_rot_delta = max(max_rot_delta, angle)
-
-    logging.info(
-        "Pose-graph delta: max translation %.6f m, max rotation %.6f rad.",
-        max_trans_delta,
-        max_rot_delta,
-    )
-    if len(keyframes) > 1:
-        assert (
-            max_trans_delta > 1e-4 or max_rot_delta > 1e-4
-        ), "Pose-graph optimization produced negligible change (<1e-4)."
-
-    return optimized_poses
-
-
-# -----------------------------------------------------------------------------
 # TSDF fusion
 # -----------------------------------------------------------------------------
 
@@ -859,8 +729,6 @@ class FrameRecord:
     raw_pcd: o3d.geometry.PointCloud
     pose_world: np.ndarray
     coarse_pose_world: np.ndarray
-    keyframe_idx: int
-    relative_to_keyframe: np.ndarray
     pair_metric: Optional[Dict[str, float]] = None
 
 
@@ -872,12 +740,6 @@ def _sorted_frame_ids(directory: Path) -> List[int]:
         except ValueError:
             continue
     return sorted(ids)
-
-
-def make_information_matrix(threshold: float) -> np.ndarray:
-    weight = 1.0 / max(1e-8, threshold * threshold)
-    info = np.eye(6, dtype=np.float64) * weight
-    return info
 
 
 def accumulate_point_cloud(
@@ -1003,7 +865,7 @@ def _create_trajectory_line_set(
 
 
 def _remove_ceiling_points(
-    pcd: o3d.geometry.PointCloud, percentile: float = 80.0
+    pcd: o3d.geometry.PointCloud, percentile: float = 70.0
 ) -> o3d.geometry.PointCloud:
     if len(pcd.points) == 0:
         return o3d.geometry.PointCloud()
@@ -1259,17 +1121,12 @@ def run_reconstruction(args) -> Dict[str, object]:
         raise RuntimeError("No overlapping RGB-D frames found.")
 
     base_voxel = float(args.voxel_size)
-    keyframes = KeyframeDB()
     frames: List[FrameRecord] = []
     pair_metrics: List[Dict[str, float]] = []
-    odom_edges: List[Dict[str, object]] = []
-    loop_edges: List[Dict[str, object]] = []
 
     prev_down = None
     prev_fpfh = None
-    prev_raw = None
     prev_pose_world = np.eye(4)
-    current_keyframe_idx = -1
 
     max_depth = 15.0
 
@@ -1306,9 +1163,8 @@ def run_reconstruction(args) -> Dict[str, object]:
             logging.warning("Frame %d: FPFH computation failed; skipping frame.", frame_id)
             continue
 
-        if prev_down is None or prev_fpfh is None or prev_raw is None:
+        if prev_down is None or prev_fpfh is None:
             pose_world = np.eye(4)
-            current_keyframe_idx = keyframes.add_keyframe(frame_id, pose_world, down_pcd, fpfh)
             frames.append(
                 FrameRecord(
                     frame_id=frame_id,
@@ -1317,13 +1173,10 @@ def run_reconstruction(args) -> Dict[str, object]:
                     raw_pcd=raw_pcd,
                     pose_world=pose_world,
                     coarse_pose_world=pose_world,
-                    keyframe_idx=current_keyframe_idx,
-                    relative_to_keyframe=np.eye(4),
                 )
             )
             prev_down = down_pcd
             prev_fpfh = fpfh
-            prev_raw = raw_pcd
             prev_pose_world = pose_world
             logging.info("Initialized reconstruction with frame %d.", frame_id)
             continue
@@ -1366,79 +1219,6 @@ def run_reconstruction(args) -> Dict[str, object]:
         )
         pair_metrics.append(pair_metric)
 
-        make_keyframe = (idx % args.kf_every == 0)
-        if make_keyframe:
-            current_keyframe_idx = keyframes.add_keyframe(frame_id, pose_world, down_pcd, fpfh)
-            if len(keyframes) >= 2:
-                prev_kf = keyframes.get_keyframe(current_keyframe_idx - 1)
-                rel = np.linalg.inv(prev_kf.pose) @ pose_world
-                info = make_information_matrix(base_voxel * 2.0)
-                odom_edges.append(
-                    {
-                        "source": prev_kf.index,
-                        "target": current_keyframe_idx,
-                        "transformation": rel,
-                        "information": info,
-                        "uncertain": False,
-                    }
-                )
-        else:
-            if current_keyframe_idx < 0 and len(keyframes) > 0:
-                current_keyframe_idx = len(keyframes) - 1
-
-        if args.pose_graph and make_keyframe and len(keyframes) > 1:
-            for candidate in keyframes.loop_candidates(frame_id, args.loop_every):
-                if candidate.index == current_keyframe_idx:
-                    continue
-                coarse_loop, coarse_loop_stats = coarse_register(
-                    keyframes.get_keyframe(current_keyframe_idx).down_pcd,
-                    candidate.down_pcd,
-                    keyframes.get_keyframe(current_keyframe_idx).fpfh,
-                    candidate.fpfh,
-                    base_voxel,
-                    use_fgr=args.use_fgr,
-                    max_pairs=args.max_pairs,
-                )
-                refined_loop, loop_icp_stats = icp_solver(
-                    keyframes.get_keyframe(current_keyframe_idx).down_pcd,
-                    candidate.down_pcd,
-                    coarse_loop,
-                    base_voxel,
-                    args.knn,
-                    args.icp_iters,
-                )
-                if loop_icp_stats["fitness"] < 0.25:
-                    logging.info(
-                        "Loop candidate frame %d rejected (fitness %.3f).",
-                        candidate.frame_id,
-                        loop_icp_stats["fitness"],
-                    )
-                    continue
-                info = make_information_matrix(base_voxel * 1.5)
-                loop_edges.append(
-                    {
-                        "source": candidate.index,
-                        "target": current_keyframe_idx,
-                        "transformation": refined_loop,
-                        "information": info,
-                        "uncertain": True,
-                        "fitness": loop_icp_stats["fitness"],
-                    }
-                )
-                logging.info(
-                    "Loop closure added: %d -> %d (fitness %.3f, rmse %.4f).",
-                    candidate.frame_id,
-                    frame_id,
-                    loop_icp_stats["fitness"],
-                    loop_icp_stats["rmse"],
-                )
-
-        relative_to_kf = (
-            np.linalg.inv(keyframes.get_keyframe(current_keyframe_idx).pose) @ pose_world
-            if current_keyframe_idx >= 0
-            else np.eye(4)
-        )
-
         frames.append(
             FrameRecord(
                 frame_id=frame_id,
@@ -1447,46 +1227,25 @@ def run_reconstruction(args) -> Dict[str, object]:
                 raw_pcd=raw_pcd,
                 pose_world=pose_world,
                 coarse_pose_world=coarse_pose_world,
-                keyframe_idx=current_keyframe_idx,
-                relative_to_keyframe=relative_to_kf,
                 pair_metric=pair_metric,
             )
         )
 
         prev_down = down_pcd
         prev_fpfh = fpfh
-        prev_raw = raw_pcd
         prev_pose_world = pose_world
 
     raw_accumulated = accumulate_point_cloud(frames)
     coarse_accumulated = accumulate_point_cloud(frames, pose_attr="coarse_pose_world")
-
-    optimized_frames = frames
-    optimized_keyframe_poses = [kf.pose for kf in keyframes.keyframes]
-    if args.pose_graph and len(keyframes) > 1:
-        optimized_keyframe_poses = build_and_optimize_pose_graph(
-            keyframes.keyframes, odom_edges, loop_edges
-        )
-        for kf, pose in zip(keyframes.keyframes, optimized_keyframe_poses):
-            kf.pose = pose
-        for frame in frames:
-            if frame.keyframe_idx >= 0:
-                frame.pose_world = (
-                    optimized_keyframe_poses[frame.keyframe_idx] @ frame.relative_to_keyframe
-                )
-        optimized_frames = frames
-
-    optimized_accumulated = accumulate_point_cloud(optimized_frames)
+    optimized_accumulated = accumulate_point_cloud(frames)
 
     return {
-        "frames": optimized_frames,
+        "frames": frames,
         "raw_frames": frames,
         "pair_metrics": pair_metrics,
         "raw_pcd": raw_accumulated,
         "coarse_pcd": coarse_accumulated,
         "optimized_pcd": optimized_accumulated,
-        "keyframes": keyframes.keyframes,
-        "optimized_keyframe_poses": optimized_keyframe_poses,
         "data_root": data_root,
     }
 
@@ -1524,9 +1283,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Choose ICP backend: 'custom' multiscale implementation or Open3D local ICP.",
     )
     parser.add_argument("--use-fgr", type=str2bool, default=True)
-    parser.add_argument("--pose-graph", type=str2bool, default=True)
-    parser.add_argument("--kf-every", type=int, default=10)
-    parser.add_argument("--loop-every", type=int, default=50)
     parser.add_argument("--tsdf", type=str2bool, default=True)
     parser.add_argument("--sdf-trunc-mult", type=float, default=5.0)
     parser.add_argument("--output-dir", type=str, default="./out")
@@ -1595,9 +1351,9 @@ def main():
         output_dir,
         [
             f"reconstruction_optimized{stage_suffix}",
-            f"stage_pose_graph{stage_suffix}",
+            f"stage_final{stage_suffix}",
         ],
-        "pose-graph optimization",
+        "final reconstruction",
     )
 
     frames: List[FrameRecord] = result["frames"]  # type: ignore[assignment]
