@@ -239,16 +239,16 @@ def coarse_register(
                     best_fitness,
                     best_rmse,
                 )
-                if best_fitness < 0.9:
+                if best_fitness < 0.97:
                     logging.info(
-                        "FGR fitness %.3f < 0.9; falling back to RANSAC.", best_fitness
+                        "FGR fitness %.3f < 0.97; falling back to RANSAC.", best_fitness
                     )
             else:
                 logging.info("FGR returned None, falling back to RANSAC.")
         except RuntimeError as exc:
             logging.warning("FGR failed with %s. Falling back to RANSAC.", exc)
 
-    if method_used != "fgr" or best_fitness < 0.9:
+    if method_used != "fgr" or best_fitness < 0.97:
         distance_threshold = threshold
         ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
             src_use,
@@ -796,26 +796,123 @@ def _create_trajectory_line_set(
     return line_set
 
 
+@dataclass
+class PlaneModel:
+    normal: np.ndarray
+    offset: float
+    inlier_count: int
+    mean_height: float
+
+
+def _fit_ceiling_plane(
+    pcd: o3d.geometry.PointCloud,
+    distance_threshold: float = 0.03,
+    ransac_n: int = 3,
+    num_iterations: int = 2000,
+    top_percentile: float = 65.0,
+    min_inlier_ratio: float = 0.05,
+    max_planes: int = 4,
+) -> Optional[PlaneModel]:
+    if len(pcd.points) < ransac_n:
+        return None
+    points = np.asarray(pcd.points)
+    if points.size == 0:
+        return None
+    vertical_coords = points[:, 1]
+    percentile = float(np.clip(top_percentile, 0.0, 100.0))
+    mask = vertical_coords >= np.percentile(vertical_coords, percentile) if percentile > 0 else np.ones_like(vertical_coords, dtype=bool)
+    candidate_points = points[mask]
+    if candidate_points.shape[0] < ransac_n:
+        candidate_points = points
+    candidate_pcd = o3d.geometry.PointCloud()
+    candidate_pcd.points = o3d.utility.Vector3dVector(candidate_points)
+
+    best: Optional[PlaneModel] = None
+    best_score: Optional[Tuple[float, float, int]] = None
+    remaining = candidate_pcd
+    min_inliers = max(int(min_inlier_ratio * len(points)), ransac_n)
+
+    for _ in range(max_planes):
+        if len(remaining.points) < ransac_n:
+            break
+        plane = remaining.segment_plane(distance_threshold, ransac_n, num_iterations)
+        if plane is None:
+            break
+        plane_model, inliers = plane
+        if not inliers:
+            break
+        inliers_arr = np.asarray(remaining.points)[inliers]
+        if inliers_arr.shape[0] < min_inliers:
+            remaining = remaining.select_by_index(inliers, invert=True)
+            continue
+        normal = np.asarray(plane_model[:3], dtype=float)
+        offset = float(plane_model[3])
+        norm = float(np.linalg.norm(normal))
+        if norm < 1e-8:
+            remaining = remaining.select_by_index(inliers, invert=True)
+            continue
+        normal /= norm
+        offset /= norm
+        if normal[1] < 0.0:
+            normal = -normal
+            offset = -offset
+        mean_height = float(np.mean(inliers_arr[:, 1]))
+        score = (float(abs(normal[1])), mean_height, len(inliers_arr))
+        if best_score is None or score > best_score:
+            best_score = score
+            best = PlaneModel(normal=normal, offset=offset, inlier_count=len(inliers_arr), mean_height=mean_height)
+        remaining = remaining.select_by_index(inliers, invert=True)
+        if len(remaining.points) < min_inliers:
+            break
+    return best
+
+
 def _remove_ceiling_points(
-    pcd: o3d.geometry.PointCloud, percentile: float = 70.0
+    pcd: o3d.geometry.PointCloud,
+    plane_distance: float = 1.1,
+    ransac_distance: float = 0.03,
+    min_inlier_ratio: float = 0.2,
+    fallback_percentile: float = 70.0,
 ) -> o3d.geometry.PointCloud:
-    """Remove the highest percentile of points along +Y (treating them as ceiling)."""
+    """Fit the dominant horizontal plane near the ceiling and remove its inliers."""
     if len(pcd.points) == 0:
         return o3d.geometry.PointCloud()
+    plane = _fit_ceiling_plane(
+        pcd,
+        distance_threshold=ransac_distance,
+        min_inlier_ratio=min_inlier_ratio,
+    )
     coords = np.asarray(pcd.points)
-    vertical = coords[:, 1]
-    percentile = float(np.clip(percentile, 0.0, 100.0))
+    if plane is not None:
+        distances = np.abs(coords @ plane.normal + plane.offset)
+        mask = distances > plane_distance
+        if np.any(mask):
+            filtered = o3d.geometry.PointCloud()
+            filtered.points = o3d.utility.Vector3dVector(coords[mask])
+            if pcd.has_colors():
+                filtered.colors = o3d.utility.Vector3dVector(np.asarray(pcd.colors)[mask])
+            if pcd.has_normals():
+                filtered.normals = o3d.utility.Vector3dVector(np.asarray(pcd.normals)[mask])
+            logging.info(
+                "Removed %d ceiling points using plane model (mean height %.3f m).",
+                plane.inlier_count,
+                plane.mean_height,
+            )
+            return filtered
+        logging.warning(
+            "Plane-based ceiling removal removed all points; falling back to percentile filter."
+        )
+    percentile = float(np.clip(fallback_percentile, 0.0, 100.0))
     if percentile <= 0.0:
         return pcd
+    vertical = coords[:, 1]
     try:
         threshold = float(np.percentile(vertical, percentile))
     except IndexError:
         threshold = float(np.max(vertical))
     mask = vertical <= threshold
     if not np.any(mask):
-        logging.warning(
-            "Ceiling removal kept no points; keeping original cloud."
-        )
+        logging.warning("Ceiling removal kept no points; keeping original cloud.")
         return pcd
     filtered = o3d.geometry.PointCloud()
     filtered.points = o3d.utility.Vector3dVector(coords[mask])
@@ -962,7 +1059,11 @@ def _visualize_bev_scene(
         logging.warning("No geometries available for visualization.")
         return
     vis = o3d.visualization.Visualizer()
-    vis.create_window(window_name="Reconstruction Trajectories (BEV)", width=960, height=720)
+    vis.create_window(
+        window_name="Ceiling-Removed Reconstruction & Trajectories",
+        width=960,
+        height=720,
+    )
     render_opts = vis.get_render_option()
     if render_opts is not None:
         render_opts.point_size = 2.5
