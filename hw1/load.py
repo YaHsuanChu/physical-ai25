@@ -96,6 +96,12 @@ def make_simple_cfg(settings):
     semantic_sensor_spec.sensor_subtype = habitat_sim.SensorSubType.PINHOLE
 
     agent_cfg.sensor_specifications = [rgb_sensor_spec, depth_sensor_spec, semantic_sensor_spec]
+    if "move_backward" not in agent_cfg.action_space:
+        forward_spec = agent_cfg.action_space["move_forward"].actuation
+        agent_cfg.action_space["move_backward"] = habitat_sim.agent.ActionSpec(
+            "move_backward",
+            habitat_sim.agent.ActuationSpec(amount=forward_spec.amount),
+        )
 
     return habitat_sim.Configuration(sim_cfg, [agent_cfg])
 
@@ -147,12 +153,14 @@ print("Discrete action space: ", action_names)
 
 
 FORWARD_KEY="w"
+BACKWARD_KEY="s"
 LEFT_KEY="a"
 RIGHT_KEY="d"
 FINISH="f"
 print("#############################")
 print("use keyboard to control the agent")
 print(" w for go forward  ")
+print(" s for go backward  ")
 print(" a for turn left  ")
 print(" d for trun right  ")
 print(" f for finish and quit the program")
@@ -180,6 +188,10 @@ while True:
         action = "move_forward"
         navigateAndSee(action, data_root)
         print("action: FORWARD")
+    elif keystroke == ord(BACKWARD_KEY):
+        action = "move_backward"
+        navigateAndSee(action, data_root)
+        print("action: BACKWARD")
     elif keystroke == ord(LEFT_KEY):
         action = "turn_left"
         navigateAndSee(action, data_root)
