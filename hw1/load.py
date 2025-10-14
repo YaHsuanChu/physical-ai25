@@ -14,6 +14,7 @@ import shutil
 # support a variety of mesh formats, such as .glb, .gltf, .obj, .ply
 ### put your scene path ###
 test_scene = "replica_v1/apartment_0/habitat/mesh_semantic.ply"
+print(os.path.exists(test_scene))
 
 sim_settings = {
     "scene": test_scene,  # Scene path

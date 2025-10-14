@@ -82,10 +82,7 @@ class Projection(object):
         return self.Rz(roll) @ self.Ry(yaw) @ self.Rx(pitch)
 
     def top_to_front(self):
-        """
-        Project the selected BEV pixels onto the front view using
-        the relative pose between the two cameras.
-        """
+        """ Project the selected BEV pixels onto the front view."""
 
         H, W = self.height, self.width
         K = self.intrinsics_from_fov(W, H, self.fov)
@@ -122,7 +119,6 @@ class Projection(object):
             pixel = np.round(x_h[:2] / x_h[2]).astype(int)
             pixel = np.clip(pixel, 0, W)
             new_pixels.append(pixel.tolist())
-
         return new_pixels
 
     def show_image(self, new_pixels, img_name='projection.png', color=(0, 0, 255), alpha=0.4):
