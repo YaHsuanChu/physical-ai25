@@ -239,16 +239,16 @@ def coarse_register(
                     best_fitness,
                     best_rmse,
                 )
-                if best_fitness < 0.2:
+                if best_fitness < 0.9:
                     logging.info(
-                        "FGR fitness %.3f < 0.2; falling back to RANSAC.", best_fitness
+                        "FGR fitness %.3f < 0.9; falling back to RANSAC.", best_fitness
                     )
             else:
                 logging.info("FGR returned None, falling back to RANSAC.")
         except RuntimeError as exc:
             logging.warning("FGR failed with %s. Falling back to RANSAC.", exc)
 
-    if method_used != "fgr" or best_fitness < 0.2:
+    if method_used != "fgr" or best_fitness < 0.9:
         distance_threshold = threshold
         ransac_result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
             src_use,
@@ -280,7 +280,7 @@ def coarse_register(
                 best_fitness,
             )
         assert (
-            best_fitness >= 0.2
+            best_fitness >= 0.5
         ), f"Coarse registration fitness {best_fitness:.3f} below 0.2 threshold."
 
     return best_trans, {"fitness": best_fitness, "rmse": best_rmse, "method": method_used}
@@ -867,10 +867,14 @@ def _create_trajectory_line_set(
 def _remove_ceiling_points(
     pcd: o3d.geometry.PointCloud, percentile: float = 70.0
 ) -> o3d.geometry.PointCloud:
+    """Remove the highest percentile of points along +Y (treating them as ceiling)."""
     if len(pcd.points) == 0:
         return o3d.geometry.PointCloud()
     coords = np.asarray(pcd.points)
     vertical = coords[:, 1]
+    percentile = float(np.clip(percentile, 0.0, 100.0))
+    if percentile <= 0.0:
+        return pcd
     try:
         threshold = float(np.percentile(vertical, percentile))
     except IndexError:
@@ -1136,6 +1140,11 @@ def run_reconstruction(args) -> Dict[str, object]:
         else icp_point_to_plane_open3d
     )
 
+    if args.disable_global_registration:
+        logging.info(
+            "Global registration disabled; using identity as the initial transform for ICP."
+        )
+
     for idx, frame_id in enumerate(frame_ids):
         rgb_path = rgb_dir / f"{frame_id}.png"
         depth_path = depth_dir / f"{frame_id}.png"
@@ -1181,15 +1190,19 @@ def run_reconstruction(args) -> Dict[str, object]:
             logging.info("Initialized reconstruction with frame %d.", frame_id)
             continue
 
-        coarse_T, coarse_stats = coarse_register(
-            down_pcd,
-            prev_down,
-            fpfh,
-            prev_fpfh,
-            base_voxel,
-            use_fgr=args.use_fgr,
-            max_pairs=args.max_pairs,
-        )
+        if args.disable_global_registration:
+            coarse_T = np.eye(4)
+            coarse_stats = {"method": "disabled", "fitness": 0.0, "rmse": 0.0}
+        else:
+            coarse_T, coarse_stats = coarse_register(
+                down_pcd,
+                prev_down,
+                fpfh,
+                prev_fpfh,
+                base_voxel,
+                use_fgr=args.use_fgr,
+                max_pairs=args.max_pairs,
+            )
 
         coarse_pose_world = prev_pose_world @ coarse_T
 
@@ -1283,7 +1296,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Choose ICP backend: 'custom' multiscale implementation or Open3D local ICP.",
     )
     parser.add_argument("--use-fgr", type=str2bool, default=True)
+    parser.add_argument(
+        "--disable-global-registration",
+        action="store_true",
+        help="Skip the coarse global registration stage and initialize ICP with identity.",
+    )
     parser.add_argument("--tsdf", type=str2bool, default=True)
+    parser.add_argument(
+        "--disable-tsdf",
+        action="store_true",
+        help="Skip TSDF fusion entirely (overrides --tsdf).",
+    )
     parser.add_argument("--sdf-trunc-mult", type=float, default=5.0)
     parser.add_argument("--output-dir", type=str, default="./out")
     parser.add_argument("--save-raw", type=str2bool, default=True)
@@ -1364,7 +1387,7 @@ def main():
         else np.zeros((0, 3), dtype=float)
     )
 
-    if args.tsdf:
+    if args.tsdf and not args.disable_tsdf:
         fuse_tsdf(
             frames,
             load_intrinsics(Path(args.intrinsics))[0],
@@ -1373,6 +1396,8 @@ def main():
             output_dir,
             args.icp_mode,
         )
+    elif args.disable_tsdf:
+        logging.info("Skipping TSDF fusion because --disable-tsdf was provided.")
 
     pair_metrics: List[Dict[str, float]] = result["pair_metrics"]  # type: ignore[assignment]
     if pair_metrics:

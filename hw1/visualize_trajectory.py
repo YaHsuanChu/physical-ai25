@@ -207,7 +207,7 @@ def parse_args() -> argparse.Namespace:
         "--ceiling-percentile",
         type=float,
         default=63.0,
-        help="Percentile threshold for removing ceiling points (Y axis).",
+        help="Percentile of points to retain along Y (removes the highest Y values interpreted as ceiling).",
     )
     parser.add_argument(
         "--bev-output",
