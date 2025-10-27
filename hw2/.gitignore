@@ -3,3 +3,4 @@ results/
 *.json
 results*
 ins*
+print_npy.py

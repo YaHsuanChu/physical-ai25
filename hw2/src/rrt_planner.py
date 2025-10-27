@@ -29,11 +29,13 @@ OUTPUT_DIR: Path = Path("results")
 CLICK_TO_SELECT_START = True
 START_PIXEL: Optional[Tuple[int, int]] = None  # Used when CLICK_TO_SELECT_START is False.
 
+# --------- RRT parameters ----------
 RRT_STEP_SIZE = 15.0
 GOAL_BIAS = 0.05
 GOAL_RADIUS = 20.0
 MAX_ITERATIONS = 20000
 RNG_SEED: Optional[int] = None
+# -----------------------------------
 
 LOG_LEVEL = "INFO"
 

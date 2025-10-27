@@ -2,8 +2,7 @@
 """Construct a 2D semantic map from a 3D point cloud for Physical AI HW2.
 
 This script filters out floor and ceiling points, projects the remaining
-geometry onto the x–z plane, rasterises a semantic map, and exports the data
-products required by downstream homework parts.
+geometry onto the x–z plane, rasterises a semantic map, and exports the data.
 """
 
 from __future__ import annotations
@@ -18,9 +17,9 @@ from typing import Dict, Iterable, List, Tuple
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-from scipy import ndimage  # noqa: E402
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy import ndimage
 
 
 LOGGER = logging.getLogger(Path(__file__).stem)
@@ -298,6 +297,7 @@ def main() -> None:
 
     affine, px, pz = compute_affine(x, z, MAP_SIZE)
     map_image = rasterise_map(MAP_SIZE, MAP_SIZE, px, pz, filtered_colours)
+    map_image = ndimage.grey_dilation(map_image, size=(3, 3, 1))
     obstacle_mask = create_obstacle_mask(map_image)
 
     save_outputs(output_dir, map_image, obstacle_mask, x, z, filtered_colours)
