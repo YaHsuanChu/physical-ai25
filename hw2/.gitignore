@@ -1,0 +1,5 @@
+results/
+*.png
+*.json
+results*
+ins*
