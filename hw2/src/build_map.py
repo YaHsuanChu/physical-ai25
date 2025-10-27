@@ -238,16 +238,11 @@ def rasterise_map(
 
 def create_obstacle_mask(image: np.ndarray) -> np.ndarray:
     """Generate a binary occupancy mask (255 obstacle, 0 free)."""
-    #occupied = np.any(image != 0, axis=2)
-    #closed = ndimage.binary_closing(occupied, structure=np.ones((3, 3), dtype=bool))
-    #mask = (closed.astype(np.uint8)) * 255
     occupied = np.any(image != 0, axis=2)
 
-    # First close small holes
+    # Close small gaps so thin walls become watertight, then lightly inflate walls.
     closed = ndimage.binary_closing(occupied, structure=np.ones((14, 14), dtype=bool))
-    # Then dilate obstacles outward a bit (thicken walls)
-    dilated = ndimage.binary_dilation(closed, structure=np.ones((5, 5), dtype=bool))
-    
+    dilated = ndimage.binary_dilation(closed, structure=np.ones((3, 3), dtype=bool))
     mask = (dilated.astype(np.uint8)) * 255
 
     return mask

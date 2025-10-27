@@ -144,13 +144,14 @@ def pick_target_anchor(
         raise ValueError("Target class pixels not found on the map.")
 
     free_mask = obstacle_mask == 0
-    border_mask = ndimage.binary_dilation(target_mask, iterations=1) & ~target_mask
-    candidate_mask = border_mask & free_mask
-    if not np.any(candidate_mask):
-        # Expand search slightly if direct neighbours are blocked.
-        expanded_border = ndimage.binary_dilation(target_mask, iterations=2) & ~target_mask
-        candidate_mask = expanded_border & free_mask
-    if not np.any(candidate_mask):
+    candidate_mask = None
+    max_radius = 50
+    for radius in range(1, max_radius + 1):
+        border_mask = ndimage.binary_dilation(target_mask, iterations=radius) & ~target_mask
+        candidate_mask = border_mask & free_mask
+        if np.any(candidate_mask):
+            break
+    if candidate_mask is None or not np.any(candidate_mask):
         raise ValueError("Failed to locate a navigable pixel in front of the target blob.")
 
     distance_to_obstacles = ndimage.distance_transform_edt(free_mask)

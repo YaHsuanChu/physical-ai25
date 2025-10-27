@@ -3,4 +3,5 @@ results/
 *.json
 results*
 ins*
+__pycache__/
 print_npy.py
