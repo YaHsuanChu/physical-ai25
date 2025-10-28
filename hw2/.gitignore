@@ -5,3 +5,6 @@ results*
 ins*
 __pycache__/
 print_npy.py
+habitat-lab/
+habitat-sim/
+replica_v1/
