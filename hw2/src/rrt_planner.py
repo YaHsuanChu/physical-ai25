@@ -19,7 +19,7 @@ from scipy import ndimage
 
 LOGGER = logging.getLogger(Path(__file__).stem)
 
-TARGET_CLASS = "rack"
+TARGET_CLASS = "stair"
 MAP_IMAGE_PATH: Path = Path("results/map.png")
 OBSTACLE_MASK_PATH: Path = Path("results/obstacle_mask.png")
 META_PATH: Path = Path("results/map_meta.json")
@@ -30,10 +30,10 @@ CLICK_TO_SELECT_START = True
 START_PIXEL: Optional[Tuple[int, int]] = None  # Used when CLICK_TO_SELECT_START is False.
 
 # --------- RRT parameters ----------
-RRT_STEP_SIZE = 15.0
+RRT_STEP_SIZE = 30.0
 GOAL_BIAS = 0.05
 GOAL_RADIUS = 20.0
-MAX_ITERATIONS = 20000
+MAX_ITERATIONS = 100000
 RNG_SEED: Optional[int] = None
 # -----------------------------------
 
