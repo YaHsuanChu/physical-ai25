@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import logging
@@ -379,15 +380,81 @@ def save_overlay(
     LOGGER.info("Saved RRT overlay to %s", output_path)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Plan a path on the semantic map using RRT."
+    )
+    parser.add_argument(
+        "--target",
+        default=TARGET_CLASS,
+        help=f"Semantic class to navigate towards (default: {TARGET_CLASS}).",
+    )
+    parser.add_argument(
+        "--start",
+        type=int,
+        nargs=2,
+        metavar=("X", "Y"),
+        default=None,
+        help="Explicit start pixel as 'X Y' to skip interactive selection.",
+    )
+    parser.add_argument(
+        "--no-click",
+        action="store_true",
+        help="Disable interactive start selection (requires --start).",
+    )
+    parser.add_argument(
+        "--step-size",
+        type=float,
+        default=RRT_STEP_SIZE,
+        help=f"RRT step size in pixels (default: {RRT_STEP_SIZE}).",
+    )
+    parser.add_argument(
+        "--goal-bias",
+        type=float,
+        default=GOAL_BIAS,
+        help=f"Probability of sampling the goal (default: {GOAL_BIAS}).",
+    )
+    parser.add_argument(
+        "--goal-radius",
+        type=float,
+        default=GOAL_RADIUS,
+        help=f"Goal capture radius in pixels (default: {GOAL_RADIUS}).",
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=MAX_ITERATIONS,
+        help=f"Maximum RRT iterations (default: {MAX_ITERATIONS}).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=RNG_SEED,
+        help="Random seed for the planner (default: reuse scripted value).",
+    )
+    parser.add_argument(
+        "--log-level",
+        default=LOG_LEVEL,
+        help=f"Logging level (default: {LOG_LEVEL}).",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    configure_logging(LOG_LEVEL)
+    args = parse_args()
+    configure_logging(args.log_level)
 
-    if CLICK_TO_SELECT_START and START_PIXEL is not None:
-        raise ValueError("Set either CLICK_TO_SELECT_START or START_PIXEL, not both.")
-    if not CLICK_TO_SELECT_START and START_PIXEL is None:
-        raise ValueError("Provide START_PIXEL when CLICK_TO_SELECT_START is False.")
+    click_to_select = not args.no_click and args.start is None
+    if not click_to_select and args.start is None:
+        raise ValueError("Provide --start X Y when using --no-click, or omit both to click.")
 
-    rng = np.random.default_rng(RNG_SEED)
+    if args.start is not None:
+        start_pixel = (int(args.start[0]), int(args.start[1]))
+        click_to_select = False
+    else:
+        start_pixel = None
+
+    rng = np.random.default_rng(args.seed)
     output_dir: Path = OUTPUT_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -397,19 +464,25 @@ def main() -> None:
         raise ValueError("Obstacle mask size does not match map image size.")
 
     class_colours = load_class_colours(CLASSES_CSV_PATH)
-    if TARGET_CLASS not in class_colours:
-        raise ValueError(f"Target class {TARGET_CLASS!r} not found in colour table.")
+    target_class = str(args.target)
+    if target_class not in class_colours:
+        raise ValueError(f"Target class {target_class!r} not found in colour table.")
 
-    target_colour = class_colours[TARGET_CLASS]
+    target_colour = class_colours[target_class]
     target_anchor = pick_target_anchor(map_image, obstacle_mask, target_colour)
 
-    plt = get_pyplot(CLICK_TO_SELECT_START)
-    if CLICK_TO_SELECT_START:
-        start_pixel = pick_start_by_click(plt, map_image)
+    plt = get_pyplot(click_to_select)
+    if click_to_select:
+        try:
+            start_pixel = pick_start_by_click(plt, map_image)
+        except Exception as exc:  # pragma: no cover - user interaction
+            raise RuntimeError(
+                "Interactive start selection failed; rerun with --no-click --start X Y "
+                "or provide a saved start pixel."
+            ) from exc
     else:
-        start_pixel = START_PIXEL
         if start_pixel is None:
-            raise ValueError("START_PIXEL must be defined when CLICK_TO_SELECT_START is False.")
+            raise ValueError("Failed to determine start pixel.")
         start_pixel = (int(start_pixel[0]), int(start_pixel[1]))
 
     width = map_image.shape[1]
@@ -427,10 +500,10 @@ def main() -> None:
         start=start_pixel,
         goal=target_anchor,
         free_mask=free_mask,
-        step_size=float(RRT_STEP_SIZE),
-        goal_bias=float(GOAL_BIAS),
-        goal_radius=float(GOAL_RADIUS),
-        max_iter=int(MAX_ITERATIONS),
+        step_size=float(args.step_size),
+        goal_bias=float(args.goal_bias),
+        goal_radius=float(args.goal_radius),
+        max_iter=int(args.max_iterations),
         rng=rng,
     )
     path_pixels_list = extract_path(nodes, goal_idx)
@@ -442,9 +515,9 @@ def main() -> None:
         raise ValueError("Affine transform missing from map_meta.json.")
     path_habitat = pixels_to_habitat(path_pixels.astype(np.float64), affine)
 
-    save_path_arrays(output_dir, TARGET_CLASS, path_pixels, path_habitat)
+    save_path_arrays(output_dir, target_class, path_pixels, path_habitat)
 
-    overlay_path = output_dir / f"rrt_{TARGET_CLASS}_overlay.png"
+    overlay_path = output_dir / f"rrt_{target_class}_overlay.png"
     save_overlay(
         plt=plt,
         map_image=map_image,
