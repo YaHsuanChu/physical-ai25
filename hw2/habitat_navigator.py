@@ -13,7 +13,7 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -312,9 +312,13 @@ def main() -> None:
         override_settings["scene"] = args.scene
 
     poses = []
+    frames: List[np.ndarray] = []
     mask_used = False
     sim = None
     video_writer = None
+    display_window = "Habitat Navigation"
+    display_enabled = False
+
     try:
         sim, agent, _ = make_env(
             override_settings or None,
@@ -350,14 +354,13 @@ def main() -> None:
         frame_h, frame_w = frame_bgr.shape[:2]
         fallback_overlay = prepare_mask_overlay(args.mask_png, (frame_h, frame_w))
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        video_writer = cv2.VideoWriter(
-            str(output_path), fourcc, args.fps, (frame_w, frame_h)
-        )
-        if not video_writer.isOpened():
-            raise RuntimeError(f"Failed to open video writer at {output_path}.")
-
         target_ids = collect_target_semantic_ids(sim, args.target)
+
+        try:
+            cv2.namedWindow(display_window, cv2.WINDOW_NORMAL)
+            display_enabled = True
+        except cv2.error:
+            print("Warning: Failed to create display window; continuing without GUI.")
 
         def log_pose():
             state = agent.get_state()
@@ -379,7 +382,10 @@ def main() -> None:
             fallback_overlay,
         )
         mask_used |= applied
-        video_writer.write(blend_frame)
+        frames.append(blend_frame)
+        if display_enabled:
+            cv2.imshow(display_window, blend_frame)
+            cv2.waitKey(1)
         log_pose()
 
         forward_axis = np.array([0.0, 0.0, -1.0], dtype=np.float32)
@@ -431,8 +437,40 @@ def main() -> None:
                     fallback_overlay,
                 )
                 mask_used |= applied
-                video_writer.write(blend_frame)
+                frames.append(blend_frame)
+                if display_enabled:
+                    cv2.imshow(display_window, blend_frame)
+                    cv2.waitKey(1)
                 log_pose()
+        total_frames = len(frames)
+        if total_frames == 0:
+            raise RuntimeError("No frames captured for rendering.")
+
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        video_writer = cv2.VideoWriter(
+            str(output_path), fourcc, args.fps, (frame_w, frame_h)
+        )
+        if not video_writer.isOpened():
+            raise RuntimeError(f"Failed to open video writer at {output_path}.")
+
+        for idx, frame in enumerate(frames, start=1):
+            video_writer.write(frame)
+            print(
+                f"\rRendering frame ({idx}/{total_frames})",
+                end="",
+                flush=True,
+            )
+
+        print()
+        frames.clear()
+
+        if display_enabled:
+            cv2.destroyWindow(display_window)
+
+        if sim is not None:
+            sim.close()
+            sim = None
+        agent = None
     finally:
         if video_writer is not None:
             video_writer.release()

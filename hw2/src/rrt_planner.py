@@ -19,7 +19,7 @@ from scipy import ndimage
 
 LOGGER = logging.getLogger(Path(__file__).stem)
 
-TARGET_CLASS = "chair"
+TARGET_CLASS = "rack"
 MAP_IMAGE_PATH: Path = Path("results/map.png")
 OBSTACLE_MASK_PATH: Path = Path("results/obstacle_mask.png")
 META_PATH: Path = Path("results/map_meta.json")
