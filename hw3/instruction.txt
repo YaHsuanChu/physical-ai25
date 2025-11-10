@@ -1,0 +1,23 @@
+### Task 1: Forward kinematics function
+
+The input and output of function **your_fk()** in **fk.py**:
+
+* **Input:**
+
+  * A set of joint states (the rotation angle of the robot arm) which is a 6D array ranging from −π to π
+  * The D-H parameters (following **classic convention**) of the robot arm which is a dictionary structure. We have already provided it in **fk.py**.
+* **Output:**
+
+  * The corresponding 7D pose of the robot end-effector:
+    ■ 3D position: x, y, z in the world coordinate
+    ■ 4D rotation: quaternion in (x, y, z, w) format
+  * The corresponding Jacobian matrix in ℝ⁶ˣ⁶
+
+You need to modify **your_fk()** function in **fk.py** and make it output the expected results.
+**You cannot use any PyBullet or third-party functions to directly output the results. You will not get any points in this part if you do not follow the policy.**
+Of course, the libraries about mathematical computing or matrix operations are allowed to use (e.g., numpy, quaternion, numba, scipy.spatial.transform …).
+
+To verify the correctness of your implementation, you can use a subset of testing cases to check the corresponding scores. We will use the same scoring function to verify your results (import **your_fk()** in our scoring scripts).
+
+The D-H table in the [official specification](https://www.official-specification-link.com) is slightly different in this homework.
+Please follow the D-H parameters we provided in **fk.py** or you may fail to implement this function.

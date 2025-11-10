@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run an RRT planner on the 2D semantic map for Physical AI HW2."""
+TARGET_CLASS = "stair"
 
 from __future__ import annotations
 
@@ -20,7 +21,6 @@ from scipy import ndimage
 
 LOGGER = logging.getLogger(Path(__file__).stem)
 
-TARGET_CLASS = "stair"
 MAP_IMAGE_PATH: Path = Path("results/map.png")
 OBSTACLE_MASK_PATH: Path = Path("results/obstacle_mask.png")
 META_PATH: Path = Path("results/map_meta.json")

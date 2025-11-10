@@ -57,13 +57,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--yaw_step_deg",
         type=float,
-        default=10.0,
+        default=2.5,
         help="Discrete yaw increment in degrees.",
     )
     parser.add_argument(
         "--forward_step_m",
         type=float,
-        default=0.25,
+        default=0.1,
         help="Forward step length in meters.",
     )
     parser.add_argument(
