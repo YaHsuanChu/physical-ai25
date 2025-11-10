@@ -58,12 +58,38 @@ def your_fk(DH_params : dict, q : list or tuple or np.ndarray, base_pos) -> np.n
     # -------------------------------------------------------------------------------- #
     
     #### your code ####
-    
+    def dh_transform(a, d, alpha, theta):
+        """Classic DH transformation for a revolute joint."""
+        ct, st = np.cos(theta), np.sin(theta)
+        ca, sa = np.cos(alpha), np.sin(alpha)
+        return np.asarray([
+            [ct, -st * ca,  st * sa, a * ct],
+            [st,  ct * ca, -ct * sa, a * st],
+            [0.,       sa,       ca,      d],
+            [0.,      0.,      0.,    1.0],
+        ])
 
-    # A = ? # may be more than one line
-    # jacobian = ? # may be more than one line
+    q = np.asarray(q, dtype=float)
 
-    raise NotImplementedError
+    origins = []
+    z_axes = []
+    T = A.copy()
+
+    for idx, (joint, theta) in enumerate(zip(DH_params, q)):
+        origins.append(T[:3, 3].copy())
+        z_axes.append(T[:3, 2].copy())
+
+        T = T @ dh_transform(joint['a'], joint['d'], joint['alpha'], theta)
+
+    A = T
+
+    end_pos = A[:3, 3]
+    for i in range(6):
+        z = z_axes[i]
+        o = origins[i]
+        jacobian[:3, i] = np.cross(z, end_pos - o)
+        jacobian[3:, i] = z
+
     # hint : 
     # https://automaticaddison.com/the-ultimate-guide-to-jacobian-matrices-for-robotics/
     
