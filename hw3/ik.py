@@ -45,7 +45,7 @@ def pybullet_ik(robot_id, new_pose : list or tuple or np.ndarray,
 
 
 def your_ik(robot_id, new_pose : list or tuple or np.ndarray, 
-                base_pos, max_iters : int=1000, stop_thresh : float=.001):
+                base_pos, max_iters : int=1000, stop_thresh : float=.001, damp : bool=False, damping_lambda : float=0.05):
 
 
 
@@ -83,8 +83,44 @@ def your_ik(robot_id, new_pose : list or tuple or np.ndarray,
     # 3. You may use some hyper parameters (i.e., step rate) in optimization loops
 
     ###################
-    
-    raise NotImplementedError
+
+    target_pose = np.asarray(new_pose, dtype=np.float64)
+    assert target_pose.shape[0] == 7, "Target pose should be 7D (xyz + quaternion)."
+
+    dh_params = get_ur5_DH_params()
+    q = tmp_q.astype(np.float64)
+
+    step_size = 0.5
+
+    def orientation_error(q_current, q_target):
+        """Return minimal rotation vector that aligns current orientation to target."""
+        rot_cur = R.from_quat(q_current / np.linalg.norm(q_current))
+        rot_tgt = R.from_quat(q_target / np.linalg.norm(q_target))
+        rot_err = rot_tgt * rot_cur.inv()
+        return rot_err.as_rotvec()
+
+    for _ in range(max_iters):
+        cur_pose, jacobian = your_fk(dh_params, q, base_pos)
+
+        pos_error = target_pose[:3] - cur_pose[:3]
+        rot_error = orientation_error(cur_pose[3:], target_pose[3:])
+        delta_x = np.concatenate([pos_error, rot_error])
+
+        if np.linalg.norm(delta_x[:3]) < stop_thresh and np.linalg.norm(delta_x[3:]) < stop_thresh:
+            break
+
+        if damp:
+            JT = jacobian.T
+            JJ = jacobian @ JT
+            eye = np.eye(JJ.shape[0])
+            delta_q = JT @ np.linalg.solve(JJ + (damping_lambda ** 2) * eye, delta_x)
+        else:
+            delta_q = pinv(jacobian) @ delta_x
+
+        q += step_size * delta_q
+        q = np.clip(q, joint_limits[:, 0], joint_limits[:, 1])
+
+    tmp_q = q
 
     return list(tmp_q) # 6 DoF
 
