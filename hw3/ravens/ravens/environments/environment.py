@@ -406,7 +406,7 @@ class Environment(gym.Env):
     your_joints = your_ik(self.ur5, new_pose, max_iters=100,  base_pos=[0, 0, 0])
     
     # You can use `pybullet_ik` to see the correct version
-    # your_joints = pybullet_ik(self.ur5, new_pose, max_iters=100, stop_thresh=0.0001, base_pos=[0, 0, 0])
+    #your_joints = pybullet_ik(self.ur5, new_pose, max_iters=100, stop_thresh=0.0001, base_pos=[0, 0, 0])
     
     your_joints = np.float32(your_joints)
     your_joints[2:] = (your_joints[2:] + np.pi) % (2 * np.pi) - np.pi
