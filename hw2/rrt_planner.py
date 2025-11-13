@@ -31,10 +31,11 @@ CLICK_TO_SELECT_START = True
 START_PIXEL: Optional[Tuple[int, int]] = None  # Used when CLICK_TO_SELECT_START is False.
 
 # --------- RRT parameters ----------
-RRT_STEP_SIZE = 30.0
-GOAL_BIAS = 0.05
+RRT_STEP_SIZE = 30.0 #30.0
+GOAL_BIAS = 0.15
 GOAL_RADIUS = 20.0
-MAX_ITERATIONS = 200000
+RRT_STAR_REWIRE_RADIUS = 50.0
+MAX_ITERATIONS = 400000
 RNG_SEED: Optional[int] = None
 # -----------------------------------
 
@@ -238,6 +239,25 @@ def segment_is_free(
     return True
 
 
+def _validate_start_goal(
+    start: Tuple[int, int],
+    goal: Tuple[int, int],
+    free_mask: np.ndarray,
+) -> Tuple[int, int]:
+    height, width = free_mask.shape
+    if not free_mask[start[1], start[0]]:
+        raise ValueError(f"Start pixel {start} is not in free space.")
+    if not free_mask[goal[1], goal[0]]:
+        raise ValueError(f"Goal pixel {goal} is not in free space.")
+    return width, height
+
+
+def _sample_free_pixel(rng: np.random.Generator, free_coords: np.ndarray) -> np.ndarray:
+    idx = rng.integers(0, free_coords.shape[0])
+    y, x = free_coords[idx]
+    return np.array([x, y], dtype=np.float32)
+
+
 def run_rrt(
     start: Tuple[int, int],
     goal: Tuple[int, int],
@@ -249,11 +269,7 @@ def run_rrt(
     rng: np.random.Generator,
 ) -> Tuple[List[Node], List[Tuple[Tuple[int, int], Tuple[int, int]]], int]:
     """Run a basic RRT and return the nodes, edges, and goal node index."""
-    height, width = free_mask.shape
-    if not free_mask[start[1], start[0]]:
-        raise ValueError(f"Start pixel {start} is not in free space.")
-    if not free_mask[goal[1], goal[0]]:
-        raise ValueError(f"Goal pixel {goal} is not in free space.")
+    width, height = _validate_start_goal(start, goal, free_mask)
 
     free_coords = np.column_stack(np.nonzero(free_mask)).astype(np.int32)
     if free_coords.size == 0:
@@ -269,10 +285,8 @@ def run_rrt(
         if rng.random() < goal_bias:
             sample = goal_vec
         else:
-            idx = rng.integers(0, free_coords.shape[0])
             # free_coords stores (y, x); flip to (x, y)
-            y, x = free_coords[idx]
-            sample = np.array([x, y], dtype=np.float32)
+            sample = _sample_free_pixel(rng, free_coords)
 
         dists = np.linalg.norm(coords - sample, axis=1)
         nearest_idx = int(np.argmin(dists))
@@ -308,6 +322,113 @@ def run_rrt(
                 LOGGER.info("Reached goal after %d iterations.", iteration + 1)
                 return nodes, edges, len(nodes) - 1
     raise RuntimeError("RRT failed to find a path within the iteration budget.")
+
+
+def run_rrt_star(
+    start: Tuple[int, int],
+    goal: Tuple[int, int],
+    free_mask: np.ndarray,
+    step_size: float,
+    goal_bias: float,
+    goal_radius: float,
+    rewire_radius: float,
+    max_iter: int,
+    rng: np.random.Generator,
+) -> Tuple[List[Node], List[Tuple[Tuple[int, int], Tuple[int, int]]], int]:
+    """Run an RRT* planner with rewiring."""
+    if rewire_radius <= 0.0:
+        raise ValueError("RRT* rewire radius must be positive.")
+    width, height = _validate_start_goal(start, goal, free_mask)
+
+    free_coords = np.column_stack(np.nonzero(free_mask)).astype(np.int32)
+    if free_coords.size == 0:
+        raise ValueError("Free space is empty; cannot run RRT*.")
+
+    nodes: List[Node] = [Node(x=start[0], y=start[1], parent=None)]
+    coords = np.array([[start[0], start[1]]], dtype=np.float32)
+    costs = [0.0]
+    goal_vec = np.array([goal[0], goal[1]], dtype=np.float32)
+
+    for iteration in range(max_iter):
+        if rng.random() < goal_bias:
+            sample = goal_vec
+        else:
+            sample = _sample_free_pixel(rng, free_coords)
+
+        dists = np.linalg.norm(coords - sample, axis=1)
+        nearest_idx = int(np.argmin(dists))
+        nearest_point = coords[nearest_idx]
+        direction = sample - nearest_point
+        distance = np.linalg.norm(direction)
+        if distance == 0.0:
+            continue
+        direction /= distance
+        step = direction * min(step_size, distance)
+        new_point = nearest_point + step
+        new_x = int(round(new_point[0]))
+        new_y = int(round(new_point[1]))
+        if not in_bounds((new_x, new_y), width, height):
+            continue
+        if not free_mask[new_y, new_x]:
+            continue
+
+        parent_pixel = (int(round(nearest_point[0])), int(round(nearest_point[1])))
+        if not segment_is_free(parent_pixel, (new_x, new_y), free_mask):
+            continue
+
+        new_point_vec = np.array([new_x, new_y], dtype=np.float32)
+        neighbor_dists = np.linalg.norm(coords - new_point_vec, axis=1)
+        neighbor_idxs = np.where(neighbor_dists <= rewire_radius)[0]
+        if nearest_idx not in neighbor_idxs:
+            neighbor_idxs = np.append(neighbor_idxs, nearest_idx)
+        neighbor_idxs = np.unique(neighbor_idxs)
+        best_parent = nearest_idx
+        best_cost = costs[nearest_idx] + math.hypot(
+            nodes[nearest_idx].x - new_x, nodes[nearest_idx].y - new_y
+        )
+        for idx in neighbor_idxs:
+            parent_node = nodes[idx]
+            segment = (parent_node.x, parent_node.y)
+            dist = math.hypot(parent_node.x - new_x, parent_node.y - new_y)
+            candidate_cost = costs[idx] + dist
+            if candidate_cost + 1e-9 < best_cost and segment_is_free(segment, (new_x, new_y), free_mask):
+                best_parent = idx
+                best_cost = candidate_cost
+
+        nodes.append(Node(x=new_x, y=new_y, parent=best_parent))
+        coords = np.vstack([coords, [new_x, new_y]])
+        costs.append(best_cost)
+        new_index = len(nodes) - 1
+
+        for idx in neighbor_idxs:
+            if idx == best_parent:
+                continue
+            neighbor_node = nodes[idx]
+            new_cost = best_cost + math.hypot(neighbor_node.x - new_x, neighbor_node.y - new_y)
+            if new_cost + 1e-9 < costs[idx]:
+                if segment_is_free((new_x, new_y), (neighbor_node.x, neighbor_node.y), free_mask):
+                    neighbor_node.parent = new_index
+                    costs[idx] = new_cost
+
+        dist_to_goal = math.hypot(new_x - goal[0], new_y - goal[1])
+        if dist_to_goal <= goal_radius:
+            if segment_is_free((new_x, new_y), goal, free_mask):
+                goal_parent = len(nodes) - 1
+                nodes.append(Node(x=goal[0], y=goal[1], parent=goal_parent))
+                coords = np.vstack([coords, [goal[0], goal[1]]])
+                costs.append(best_cost + dist_to_goal)
+                LOGGER.info("Reached goal (RRT*) after %d iterations.", iteration + 1)
+                break
+    else:
+        raise RuntimeError("RRT* failed to find a path within the iteration budget.")
+
+    edges: List[Tuple[Tuple[int, int], Tuple[int, int]]] = []
+    for idx, node in enumerate(nodes):
+        if node.parent is None:
+            continue
+        parent = nodes[node.parent]
+        edges.append(((parent.x, parent.y), (node.x, node.y)))
+    return nodes, edges, len(nodes) - 1
 
 
 def extract_path(nodes: List[Node], goal_index: int) -> List[Tuple[int, int]]:
@@ -421,6 +542,15 @@ def parse_args() -> argparse.Namespace:
         help=f"Goal capture radius in pixels (default: {GOAL_RADIUS}).",
     )
     parser.add_argument(
+        "--rewire-radius",
+        type=float,
+        default=RRT_STAR_REWIRE_RADIUS,
+        help=(
+            "RRT* rewiring radius in pixels (default: "
+            f"{RRT_STAR_REWIRE_RADIUS}; ignored for basic RRT)."
+        ),
+    )
+    parser.add_argument(
         "--max-iterations",
         type=int,
         default=MAX_ITERATIONS,
@@ -436,6 +566,12 @@ def parse_args() -> argparse.Namespace:
         "--log-level",
         default=LOG_LEVEL,
         help=f"Logging level (default: {LOG_LEVEL}).",
+    )
+    parser.add_argument(
+        "--rrt-algorithm",
+        choices=["rrt", "rrt-star"],
+        default="rrt-star",
+        help="Choose between the original RRT and the RRT* variant (default: rrt-star).",
     )
     return parser.parse_args()
 
@@ -496,16 +632,29 @@ def main() -> None:
     start_record.write_text(f"{start_pixel[0]},{start_pixel[1]}\n")
 
     free_mask = (obstacle_mask == 0).astype(bool)
-    nodes, edges, goal_idx = run_rrt(
-        start=start_pixel,
-        goal=target_anchor,
-        free_mask=free_mask,
-        step_size=float(args.step_size),
-        goal_bias=float(args.goal_bias),
-        goal_radius=float(args.goal_radius),
-        max_iter=int(args.max_iterations),
-        rng=rng,
-    )
+    if args.rrt_algorithm == "rrt":
+        nodes, edges, goal_idx = run_rrt(
+            start=start_pixel,
+            goal=target_anchor,
+            free_mask=free_mask,
+            step_size=float(args.step_size),
+            goal_bias=float(args.goal_bias),
+            goal_radius=float(args.goal_radius),
+            max_iter=int(args.max_iterations),
+            rng=rng,
+        )
+    else:
+        nodes, edges, goal_idx = run_rrt_star(
+            start=start_pixel,
+            goal=target_anchor,
+            free_mask=free_mask,
+            step_size=float(args.step_size),
+            goal_bias=float(args.goal_bias),
+            goal_radius=float(args.goal_radius),
+            rewire_radius=float(args.rewire_radius),
+            max_iter=int(args.max_iterations),
+            rng=rng,
+        )
     path_pixels_list = extract_path(nodes, goal_idx)
     path_pixels = np.array(path_pixels_list, dtype=np.int32)
 

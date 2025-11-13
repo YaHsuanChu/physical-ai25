@@ -47,17 +47,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Output JSON filepath. Defaults to results/nav_<target>_traj.json.",
     )
-    parser.add_argument("--fps", type=int, default=30, help="Video frames per second.")
+    parser.add_argument("--fps", type=int, default=60, help="Video frames per second.")
     parser.add_argument(
         "--pos_tolerance",
         type=float,
-        default=0.1,
+        default=0.05,
         help="Distance (m) to consider a waypoint reached.",
     )
     parser.add_argument(
         "--yaw_step_deg",
         type=float,
-        default=2.5,
+        default=5.0,
         help="Discrete yaw increment in degrees.",
     )
     parser.add_argument(
