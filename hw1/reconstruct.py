@@ -1,7 +1,9 @@
+import argparse
+import logging
+from pathlib import Path
+
 import numpy as np
 import open3d as o3d
-import argparse
-from pathlib import Path
 
 FOV_DEG = 90.0
 
@@ -118,7 +120,7 @@ def depth_image_to_point_cloud(
     points = cam_points.T
 
     colors = rgb[valid].astype(np.float32) / 255.0
-    colors = colors[:, ::-1]
+    colors = colors[:, [2, 1, 0]]  # BGR -> RGB for visualization
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points)
@@ -299,7 +301,7 @@ def reconstruct(args):
     prev_down, prev_fpfh = preprocess_point_cloud(prev_pcd, voxel_size)
 
     for prev_idx, curr_idx in zip(frame_ids[:-1], frame_ids[1:]):
-        print('Processing: ', curr_idx)
+        logging.info("Processing frame %d.", curr_idx)
         source_pcd = load_frame(curr_idx)
         source_down, source_fpfh = preprocess_point_cloud(source_pcd, voxel_size)
 
@@ -361,6 +363,12 @@ if __name__ == '__main__':
     parser.add_argument('--disable_global_registration', action='store_true')
     args = parser.parse_args()
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s] %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     if args.floor == 1:
         args.data_root = "data_collection/first_floor/"
     elif args.floor == 2:
@@ -394,7 +402,7 @@ if __name__ == '__main__':
     if 0.0 < ceiling_quantile < 1.0:
         result_pcd = remove_ceiling_from_pcd(result_pcd, ceiling_quantile)
 
-    print(f"Mean L2 distance: {mean_l2:.4f}")
+    logging.info("Mean L2 distance: %.4f", mean_l2)
 
     geometries = [result_pcd]
 
